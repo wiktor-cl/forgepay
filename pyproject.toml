@@ -2,11 +2,12 @@
 name = "forgepay"
 version = "0.1.0"
 description = "Distributed payment processing platform portfolio project."
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
   "aiokafka>=0.12.0",
   "alembic>=1.13.3",
   "asyncpg>=0.30.0",
+  "cryptography>=50.0.0",
   "fastapi>=0.115.0",
   "email-validator>=2.2.0",
   "httpx>=0.27.2",
@@ -24,15 +25,17 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "aiohttp>=3.14.3",
   "coverage>=7.6.1",
+  "gitpython>=3.1.58",
   "hypothesis>=6.112.0",
   "locust>=2.31.5",
   "mypy>=1.11.2",
   "pre-commit>=3.8.0",
   "pytest>=8.3.3",
   "pytest-asyncio>=0.24.0",
+  "pip-audit>=2.10.1",
   "ruff>=0.6.8",
-  "testcontainers[kafka,postgres,redis]>=4.8.1",
 ]
 
 [tool.setuptools]
@@ -57,6 +60,7 @@ ignore = ["B008", "E501", "S101", "S311", "ASYNC240"]
 
 [tool.ruff.lint.per-file-ignores]
 "alembic/env.py" = ["E402", "I001"]
+"scripts/failure_demo.py" = ["S603"]
 "tests/resilience/test_outbox_kafka_webhooks.py" = ["S603", "S607"]
 
 [tool.mypy]

@@ -1,52 +1,34 @@
-import asyncio
-from uuid import uuid4
+import subprocess
+import sys
 
-import httpx
-
-BASE_URL = "http://localhost:8000"
-
-
-async def duplicate_request(api_key: str, customer_id: str) -> None:
-    idem = str(uuid4())
-    payload = {"customer_id": customer_id, "amount_minor": 1000, "currency": "PLN"}
-    async with httpx.AsyncClient(base_url=BASE_URL, timeout=10) as client:
-        responses = await asyncio.gather(
-            *[
-                client.post(
-                    "/api/v1/payments",
-                    headers={"Authorization": f"Bearer {api_key}", "Idempotency-Key": idem},
-                    json=payload,
-                )
-                for _ in range(50)
-            ],
-            return_exceptions=True,
-        )
-    bodies = [r.json() for r in responses if isinstance(r, httpx.Response)]
-    print("duplicate request: expected 1 payment and 49 equivalent responses")
-    print({"responses": len(bodies), "payment_ids": sorted({b["payment_id"] for b in bodies})})
+SCENARIOS = {
+    "idempotency_50_concurrent_requests": [
+        "tests/integration/test_real_postgres_concurrency.py::test_concurrent_identical_idempotent_requests_create_one_payment"
+    ],
+    "overspending_concurrent_captures": [
+        "tests/integration/test_real_postgres_concurrency.py::test_concurrent_overspending_preserves_ledger_balance"
+    ],
+    "duplicate_event_one_side_effect": [
+        "tests/resilience/test_outbox_kafka_webhooks.py::test_duplicate_kafka_event_creates_one_webhook_side_effect"
+    ],
+    "kafka_outage_outbox_recovery": [
+        "tests/resilience/test_outbox_kafka_webhooks.py::test_kafka_outage_leaves_outbox_pending_then_recovers"
+    ],
+    "webhook_retry_dlq_replay": [
+        "tests/resilience/test_outbox_kafka_webhooks.py::test_webhook_retry_dead_letter_and_manual_replay"
+    ],
+}
 
 
-async def main() -> None:
-    async with httpx.AsyncClient(base_url=BASE_URL, timeout=10) as client:
-        merchant = (await client.post("/api/v1/merchants", json={"name": "Failure Demo"})).json()
-        headers = {"Authorization": f"Bearer {merchant['api_key']}"}
-        customer = (
-            await client.post(
-                "/api/v1/customers",
-                headers=headers,
-                json={"email": "chaos@example.com", "currency": "PLN"},
-            )
-        ).json()
-        await client.post(
-            f"/api/v1/accounts/{customer['account_id']}/fund",
-            headers=headers,
-            json={"amount_minor": 10_000, "currency": "PLN"},
-        )
-    await duplicate_request(merchant["api_key"], customer["customer_id"])
-    print(
-        "overspending/outbox/Kafka scenarios are documented in docs/architecture/failure-recovery.md"
-    )
+def main() -> int:
+    failures = 0
+    for name, tests in SCENARIOS.items():
+        result = subprocess.run([sys.executable, "-m", "pytest", "-q", *tests], check=False)
+        status = "PASS" if result.returncode == 0 else "FAIL"
+        print(f"{name}: {status}", flush=True)
+        failures += int(result.returncode != 0)
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(main())

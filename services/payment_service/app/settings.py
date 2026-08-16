@@ -11,4 +11,4 @@ class Settings(BaseSettings):
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_topic_events: str = "forgepay.events"
     webhook_max_attempts: int = 6
-    webhook_secret: str = Field(default="dev-only-change-me")
+    webhook_secret_master_key: str = Field(default="dev-only-local-master-key")

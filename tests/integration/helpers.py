@@ -19,6 +19,7 @@ async def reset_database() -> None:
             truncate table
               audit_logs,
               webhook_deliveries,
+              webhook_secrets,
               webhook_endpoints,
               processed_events,
               outbox_events,
@@ -92,5 +93,13 @@ async def fetch_row(query: str, *args: object) -> asyncpg.Record | None:
     connection = await asyncpg.connect(DATABASE_URL)
     try:
         return await connection.fetchrow(query, *args)
+    finally:
+        await connection.close()
+
+
+async def fetch_all(query: str, *args: object) -> list[asyncpg.Record]:
+    connection = await asyncpg.connect(DATABASE_URL)
+    try:
+        return list(await connection.fetch(query, *args))
     finally:
         await connection.close()

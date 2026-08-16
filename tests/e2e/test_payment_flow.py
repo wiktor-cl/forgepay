@@ -28,6 +28,10 @@ def test_complete_payment_flow_publishes_event_and_webhook() -> None:
             },
         )
         endpoint.raise_for_status()
+        with httpx.Client(base_url=RECEIVER_URL, timeout=10) as receiver:
+            receiver.post(
+                "/accepted-secrets", json={"secret": endpoint.json()["signing_secret"]}
+            ).raise_for_status()
         customer = create_funded_customer(client, headers)
 
         payment = client.post(

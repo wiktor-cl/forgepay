@@ -150,7 +150,13 @@ async def create_journal(
     accounts_by_name: dict[str, LedgerAccount],
     lines: list[LedgerLine],
 ) -> Journal:
-    journal = Journal(reference_type=reference_type, reference_id=reference_id, currency=currency)
+    journal = Journal(
+        reference_type=reference_type,
+        reference_id=reference_id,
+        currency=currency,
+        status="DRAFT",
+        posted_at=None,
+    )
     session.add(journal)
     await session.flush()
     for line in lines:
@@ -164,6 +170,9 @@ async def create_journal(
                 currency=line.money.currency.value,
             )
         )
+    await session.flush()
+    journal.status = "POSTED"
+    journal.posted_at = utc_now()
     return journal
 
 

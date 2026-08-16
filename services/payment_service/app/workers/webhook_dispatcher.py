@@ -7,7 +7,7 @@ from datetime import timedelta
 import httpx
 from app.infra.database import SessionFactory
 from app.infra.models import OutboxEvent, WebhookDelivery, WebhookEndpoint
-from app.service import sign_delivery_body
+from app.service import active_webhook_secret, sign_delivery_body
 from app.settings import Settings
 from forgepay_common.time import utc_now
 from forgepay_observability.metrics import webhook_delivery_failures_total, webhook_delivery_total
@@ -47,9 +47,10 @@ async def dispatch_once() -> int:
                 body = json.dumps(
                     {"event_id": str(delivery.event_id)}, separators=(",", ":")
                 ).encode()
-                timestamp = int(time.time())
-                signature = sign_delivery_body(settings.webhook_secret, timestamp, body)
                 try:
+                    secret = await active_webhook_secret(session, endpoint.id)
+                    timestamp = int(time.time())
+                    signature = sign_delivery_body(secret, timestamp, body)
                     webhook_delivery_total.inc()
                     response = await client.post(
                         endpoint.url,

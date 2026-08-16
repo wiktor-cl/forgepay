@@ -7,6 +7,7 @@ from forgepay_events import EventType
 from forgepay_observability.metrics import payments_created_total, payments_failed_total
 from forgepay_security.api_keys import generate_api_key, hash_secret
 from forgepay_security.fingerprints import canonical_fingerprint
+from forgepay_security.secrets import decrypt_secret, encrypt_secret, generate_webhook_secret
 from forgepay_security.webhooks import sign_webhook
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -37,6 +38,7 @@ from app.infra.models import (
     Refund,
     WebhookDelivery,
     WebhookEndpoint,
+    WebhookSecret,
 )
 from app.infra.repositories import (
     append_audit,
@@ -56,6 +58,10 @@ class BusinessError(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class PersistedBusinessError(BusinessError):
+    """A business refusal whose state/outbox changes are intentionally committed."""
 
 
 def payment_response(payment: Payment) -> dict[str, Any]:
@@ -266,7 +272,7 @@ async def authorize_payment(
             correlation_id,
         )
         payments_failed_total.inc()
-        raise BusinessError("INSUFFICIENT_FUNDS", "Available balance is insufficient.")
+        raise PersistedBusinessError("INSUFFICIENT_FUNDS", "Available balance is insufficient.")
     payment.status = PaymentStatus.AUTHORIZED.value
     payment.updated_at = utc_now()
     await append_outbox(
@@ -437,7 +443,8 @@ async def register_webhook(
     request: WebhookEndpointCreate,
     correlation_id: UUID,
 ) -> dict[str, Any]:
-    secret = Settings().webhook_secret
+    settings = Settings()
+    secret = generate_webhook_secret()
     endpoint = WebhookEndpoint(
         merchant_id=merchant_id,
         url=str(request.url),
@@ -445,6 +452,16 @@ async def register_webhook(
         event_types=request.event_types,
     )
     session.add(endpoint)
+    await session.flush()
+    session.add(
+        WebhookSecret(
+            endpoint_id=endpoint.id,
+            version=1,
+            secret_ciphertext=encrypt_secret(secret, settings.webhook_secret_master_key),
+            secret_hash=hash_secret(secret),
+            active=True,
+        )
+    )
     await append_audit(
         session,
         actor=f"merchant:{merchant_id}",
@@ -454,6 +471,67 @@ async def register_webhook(
         metadata={"event_types": request.event_types},
     )
     return {"endpoint_id": str(endpoint.id), "signing_secret": secret}
+
+
+async def rotate_webhook_secret(
+    session: AsyncSession,
+    merchant_id: UUID,
+    endpoint_id: UUID,
+    correlation_id: UUID,
+) -> dict[str, Any]:
+    settings = Settings()
+    endpoint = await session.get(WebhookEndpoint, endpoint_id, with_for_update=True)
+    if endpoint is None or endpoint.merchant_id != merchant_id:
+        raise BusinessError("WEBHOOK_ENDPOINT_NOT_FOUND", "Webhook endpoint was not found.")
+    active_secret = await session.scalar(
+        select(WebhookSecret)
+        .where(WebhookSecret.endpoint_id == endpoint.id, WebhookSecret.active.is_(True))
+        .with_for_update()
+    )
+    latest_version = (
+        await session.scalar(
+            select(func.coalesce(func.max(WebhookSecret.version), 0)).where(
+                WebhookSecret.endpoint_id == endpoint.id
+            )
+        )
+        or 0
+    )
+    if active_secret is not None:
+        active_secret.active = False
+        active_secret.retired_at = utc_now()
+    secret = generate_webhook_secret()
+    endpoint.secret_hash = hash_secret(secret)
+    session.add(
+        WebhookSecret(
+            endpoint_id=endpoint.id,
+            version=int(latest_version) + 1,
+            secret_ciphertext=encrypt_secret(secret, settings.webhook_secret_master_key),
+            secret_hash=hash_secret(secret),
+            active=True,
+        )
+    )
+    await append_audit(
+        session,
+        actor=f"merchant:{merchant_id}",
+        action="webhook.secret_rotated",
+        resource=f"webhook_endpoint:{endpoint.id}",
+        correlation_id=correlation_id,
+        metadata={"version": int(latest_version) + 1},
+    )
+    return {"endpoint_id": str(endpoint.id), "signing_secret": secret}
+
+
+async def active_webhook_secret(session: AsyncSession, endpoint_id: UUID) -> str:
+    settings = Settings()
+    secret = await session.scalar(
+        select(WebhookSecret).where(
+            WebhookSecret.endpoint_id == endpoint_id,
+            WebhookSecret.active.is_(True),
+        )
+    )
+    if secret is None:
+        raise BusinessError("WEBHOOK_SECRET_NOT_FOUND", "Webhook signing secret was not found.")
+    return decrypt_secret(secret.secret_ciphertext, settings.webhook_secret_master_key)
 
 
 async def process_payment_event_for_webhooks(

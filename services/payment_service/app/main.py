@@ -24,8 +24,10 @@ from app.api.schemas import (
 from app.domain.payment import PaymentTransitionError
 from app.infra.database import engine, get_session
 from app.infra.models import Payment, WebhookDelivery, WebhookEndpoint
+from app.infra.repositories import append_audit
 from app.service import (
     BusinessError,
+    PersistedBusinessError,
     authorize_payment,
     cancel_payment,
     capture_payment,
@@ -36,6 +38,7 @@ from app.service import (
     payment_response,
     refund_payment,
     register_webhook,
+    rotate_webhook_secret,
 )
 
 configure_json_logging()
@@ -161,10 +164,22 @@ async def authorize_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
     principal.require("payments:write", request.state.correlation_id)
+    persisted_error: PersistedBusinessError | None = None
     async with session.begin():
-        return await authorize_payment(
-            session, principal.merchant_id, payment_id, request.state.correlation_id
+        try:
+            return await authorize_payment(
+                session, principal.merchant_id, payment_id, request.state.correlation_id
+            )
+        except PersistedBusinessError as exc:
+            persisted_error = exc
+    if persisted_error is not None:
+        raise api_error(
+            409,
+            persisted_error.code,
+            persisted_error.message,
+            request.state.correlation_id,
         )
+    raise RuntimeError("authorize route exited without response")
 
 
 @app.post("/api/v1/payments/{payment_id}/capture")
@@ -224,6 +239,20 @@ async def register_webhook_route(
         )
 
 
+@app.post("/api/v1/webhooks/endpoints/{endpoint_id}/rotate-secret")
+async def rotate_webhook_secret_route(
+    request: Request,
+    endpoint_id: UUID,
+    principal: Principal = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    principal.require("webhooks:manage", request.state.correlation_id)
+    async with session.begin():
+        return await rotate_webhook_secret(
+            session, principal.merchant_id, endpoint_id, request.state.correlation_id
+        )
+
+
 @app.post("/api/v1/webhooks/deliveries/{delivery_id}/replay")
 async def replay_webhook_delivery_route(
     request: Request,
@@ -250,7 +279,14 @@ async def replay_webhook_delivery_route(
                 request.state.correlation_id,
             )
         delivery.status = "PENDING"
-        delivery.attempts = 0
         delivery.next_attempt_at = None
-        delivery.last_error = None
+        delivery.last_error = "manual replay requested"
+        await append_audit(
+            session,
+            actor=f"merchant:{principal.merchant_id}",
+            action="webhook.delivery_replayed",
+            resource=f"webhook_delivery:{delivery.id}",
+            correlation_id=request.state.correlation_id,
+            metadata={"attempts": delivery.attempts},
+        )
         return {"delivery_id": str(delivery.id), "status": delivery.status}

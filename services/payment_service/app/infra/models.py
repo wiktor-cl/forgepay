@@ -112,10 +112,13 @@ class Journal(Base):
     reference_type: Mapped[str] = mapped_column(String(50))
     reference_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
     currency: Mapped[str] = mapped_column(String(3))
+    status: Mapped[str] = mapped_column(String(16), default="POSTED")
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utc_now)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     entries: Mapped[list["JournalEntry"]] = relationship(cascade="all, delete-orphan")
     __table_args__ = (
         UniqueConstraint("reference_type", "reference_id", name="uq_journal_reference"),
+        CheckConstraint("status in ('DRAFT', 'POSTED')", name="ck_journal_status"),
     )
 
 
@@ -176,6 +179,23 @@ class WebhookEndpoint(Base):
     event_types: Mapped[list[str]] = mapped_column(JSON)
     enabled: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class WebhookSecret(Base):
+    __tablename__ = "webhook_secrets"
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    endpoint_id: Mapped[UUID] = mapped_column(
+        ForeignKey("webhook_endpoints.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    secret_ciphertext: Mapped[str] = mapped_column(Text)
+    secret_hash: Mapped[str] = mapped_column(String(64))
+    active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("endpoint_id", "version", name="uq_webhook_secret_endpoint_version"),
+    )
 
 
 class WebhookDelivery(Base):

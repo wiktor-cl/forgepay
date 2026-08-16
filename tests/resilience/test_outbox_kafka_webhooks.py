@@ -8,6 +8,7 @@ from aiokafka import AIOKafkaProducer
 
 from tests.integration.helpers import (
     BASE_URL,
+    RECEIVER_URL,
     create_funded_customer,
     create_merchant,
     fetch_row,
@@ -89,6 +90,10 @@ def test_duplicate_kafka_event_creates_one_webhook_side_effect() -> None:
             },
         )
         endpoint.raise_for_status()
+        with httpx.Client(base_url=RECEIVER_URL, timeout=10) as receiver:
+            receiver.post(
+                "/accepted-secrets", json={"secret": endpoint.json()["signing_secret"]}
+            ).raise_for_status()
         customer = create_funded_customer(client, headers)
         payment_id = _create_payment(headers, customer["customer_id"])
 
@@ -122,6 +127,87 @@ def test_duplicate_kafka_event_creates_one_webhook_side_effect() -> None:
     wait_for(side_effect_created_once, timeout_seconds=20)
 
 
+def test_invalid_kafka_event_is_discarded_without_killing_consumer() -> None:
+    reset_state()
+    with httpx.Client(base_url=BASE_URL, timeout=10) as client:
+        _, headers = create_merchant(client)
+        endpoint = client.post(
+            "/api/v1/webhooks/endpoints",
+            headers=headers,
+            json={
+                "url": "http://webhook-receiver-demo:8010/webhooks/forgepay",
+                "event_types": ["payment.captured"],
+            },
+        )
+        endpoint.raise_for_status()
+        with httpx.Client(base_url=RECEIVER_URL, timeout=10) as receiver:
+            receiver.post(
+                "/accepted-secrets", json={"secret": endpoint.json()["signing_secret"]}
+            ).raise_for_status()
+        customer = create_funded_customer(client, headers)
+        payment_id = _create_payment(headers, customer["customer_id"])
+
+    invalid_event_id = uuid4()
+    asyncio.run(
+        _publish_duplicate_events(
+            {
+                "event_id": str(invalid_event_id),
+                "event_type": "payment.captured",
+                "occurred_at": "2026-08-16T00:00:00Z",
+                "correlation_id": str(uuid4()),
+                "causation_id": None,
+                "aggregate_id": payment_id,
+                "aggregate_type": "payment",
+                "version": 999,
+                "payload": {"payment_id": payment_id},
+            },
+            1,
+        )
+    )
+
+    def invalid_event_not_processed() -> bool:
+        processed = asyncio.run(
+            fetch_value("select count(*) from processed_events where event_id=$1", invalid_event_id)
+        )
+        deliveries = asyncio.run(
+            fetch_value(
+                "select count(*) from webhook_deliveries where event_id=$1", invalid_event_id
+            )
+        )
+        return processed == 0 and deliveries == 0
+
+    wait_for(invalid_event_not_processed, timeout_seconds=5)
+
+    valid_event_id = uuid4()
+    asyncio.run(
+        _publish_duplicate_events(
+            {
+                "event_id": str(valid_event_id),
+                "event_type": "payment.captured",
+                "occurred_at": "2026-08-16T00:00:00Z",
+                "correlation_id": str(uuid4()),
+                "causation_id": str(invalid_event_id),
+                "aggregate_id": payment_id,
+                "aggregate_type": "payment",
+                "version": 1,
+                "payload": {"payment_id": payment_id},
+            },
+            1,
+        )
+    )
+
+    def valid_event_processed_after_poison() -> bool:
+        processed = asyncio.run(
+            fetch_value("select count(*) from processed_events where event_id=$1", valid_event_id)
+        )
+        deliveries = asyncio.run(
+            fetch_value("select count(*) from webhook_deliveries where event_id=$1", valid_event_id)
+        )
+        return processed == 1 and deliveries == 1
+
+    wait_for(valid_event_processed_after_poison, timeout_seconds=20)
+
+
 def test_webhook_retry_dead_letter_and_manual_replay() -> None:
     reset_state()
     with httpx.Client(base_url=BASE_URL, timeout=10) as client:
@@ -130,11 +216,15 @@ def test_webhook_retry_dead_letter_and_manual_replay() -> None:
             "/api/v1/webhooks/endpoints",
             headers=headers,
             json={
-                "url": "http://webhook-receiver-demo:8010/webhooks/always-fail",
+                "url": "http://webhook-receiver-demo:8010/webhooks/fail-then-ok/3",
                 "event_types": ["payment.captured"],
             },
         )
         endpoint.raise_for_status()
+        with httpx.Client(base_url=RECEIVER_URL, timeout=10) as receiver:
+            receiver.post(
+                "/accepted-secrets", json={"secret": endpoint.json()["signing_secret"]}
+            ).raise_for_status()
         customer = create_funded_customer(client, headers)
         payment_id = _create_payment(headers, customer["customer_id"])
 
@@ -167,3 +257,28 @@ def test_webhook_retry_dead_letter_and_manual_replay() -> None:
         replay = client.post(f"/api/v1/webhooks/deliveries/{delivery_id}/replay", headers=headers)
         replay.raise_for_status()
         assert replay.json()["status"] == "PENDING"
+
+    def replay_succeeded_without_resetting_history() -> bool:
+        row = asyncio.run(
+            fetch_row(
+                """
+                select
+                  wd.status,
+                  wd.attempts,
+                  count(al.id) filter (where al.action='webhook.delivery_replayed') as audits
+                from webhook_deliveries wd
+                left join audit_logs al on al.resource = concat('webhook_delivery:', wd.id::text)
+                where wd.id=$1
+                group by wd.status, wd.attempts
+                """,
+                delivery_id,
+            )
+        )
+        return (
+            row is not None
+            and row["status"] == "SUCCEEDED"
+            and row["attempts"] == 4
+            and row["audits"] == 1
+        )
+
+    wait_for(replay_succeeded_without_resetting_history, timeout_seconds=30)
