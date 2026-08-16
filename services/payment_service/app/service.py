@@ -102,6 +102,7 @@ async def create_customer(
     await session.flush()
     account = Account(customer_id=customer.id, currency=request.currency.value)
     session.add(account)
+    await session.flush()
     await append_audit(
         session,
         actor=f"merchant:{merchant_id}",

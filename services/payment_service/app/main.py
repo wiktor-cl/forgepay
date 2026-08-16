@@ -82,8 +82,7 @@ async def metrics() -> Response:
 async def create_merchant_route(
     request: Request, body: MerchantCreate, session: AsyncSession = Depends(get_session)
 ) -> dict[str, str]:
-    async with session.begin():
-        return await create_merchant(session, body, request.state.correlation_id)
+    return await create_merchant(session, body, request.state.correlation_id)
 
 
 @app.post("/api/v1/customers", status_code=201)
@@ -94,10 +93,7 @@ async def create_customer_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     principal.require("payments:write", request.state.correlation_id)
-    async with session.begin():
-        return await create_customer(
-            session, principal.merchant_id, body, request.state.correlation_id
-        )
+    return await create_customer(session, principal.merchant_id, body, request.state.correlation_id)
 
 
 @app.post("/api/v1/accounts/{account_id}/fund", status_code=201)
@@ -109,10 +105,9 @@ async def fund_account_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     principal.require("payments:write", request.state.correlation_id)
-    async with session.begin():
-        return await fund_account(
-            session, principal.merchant_id, account_id, body, request.state.correlation_id
-        )
+    return await fund_account(
+        session, principal.merchant_id, account_id, body, request.state.correlation_id
+    )
 
 
 @app.post("/api/v1/payments", status_code=201)
@@ -124,10 +119,9 @@ async def create_payment_route(
     session: AsyncSession = Depends(get_session),
 ) -> JSONResponse:
     principal.require("payments:write", request.state.correlation_id)
-    async with session.begin():
-        status, response_body = await create_payment(
-            session, principal.merchant_id, body, idempotency_key, request.state.correlation_id
-        )
+    status, response_body = await create_payment(
+        session, principal.merchant_id, body, idempotency_key, request.state.correlation_id
+    )
     return JSONResponse(content=response_body, status_code=status)
 
 
@@ -155,10 +149,9 @@ async def authorize_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
     principal.require("payments:write", request.state.correlation_id)
-    async with session.begin():
-        return await authorize_payment(
-            session, principal.merchant_id, payment_id, request.state.correlation_id
-        )
+    return await authorize_payment(
+        session, principal.merchant_id, payment_id, request.state.correlation_id
+    )
 
 
 @app.post("/api/v1/payments/{payment_id}/capture")
@@ -169,10 +162,9 @@ async def capture_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
     principal.require("payments:write", request.state.correlation_id)
-    async with session.begin():
-        return await capture_payment(
-            session, principal.merchant_id, payment_id, request.state.correlation_id
-        )
+    return await capture_payment(
+        session, principal.merchant_id, payment_id, request.state.correlation_id
+    )
 
 
 @app.post("/api/v1/payments/{payment_id}/cancel")
@@ -183,10 +175,9 @@ async def cancel_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
     principal.require("payments:write", request.state.correlation_id)
-    async with session.begin():
-        return await cancel_payment(
-            session, principal.merchant_id, payment_id, request.state.correlation_id
-        )
+    return await cancel_payment(
+        session, principal.merchant_id, payment_id, request.state.correlation_id
+    )
 
 
 @app.post("/api/v1/payments/{payment_id}/refund")
@@ -198,10 +189,9 @@ async def refund_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
     principal.require("refunds:write", request.state.correlation_id)
-    async with session.begin():
-        return await refund_payment(
-            session, principal.merchant_id, payment_id, body, request.state.correlation_id
-        )
+    return await refund_payment(
+        session, principal.merchant_id, payment_id, body, request.state.correlation_id
+    )
 
 
 @app.post("/api/v1/webhooks/endpoints", status_code=201)
@@ -212,7 +202,6 @@ async def register_webhook_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     principal.require("webhooks:manage", request.state.correlation_id)
-    async with session.begin():
-        return await register_webhook(
-            session, principal.merchant_id, body, request.state.correlation_id
-        )
+    return await register_webhook(
+        session, principal.merchant_id, body, request.state.correlation_id
+    )

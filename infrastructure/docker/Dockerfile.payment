@@ -9,5 +9,4 @@ COPY services ./services
 RUN pip install --no-cache-dir -e .
 USER forgepay
 ENV PYTHONPATH=/app/libs/common:/app/libs/events:/app/libs/security:/app/libs/observability:/app/services/payment_service
-HEALTHCHECK CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
