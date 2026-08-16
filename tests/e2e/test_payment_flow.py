@@ -5,6 +5,7 @@ import httpx
 
 from tests.integration.helpers import (
     BASE_URL,
+    RECEIVER_URL,
     create_funded_customer,
     create_merchant,
     fetch_value,
@@ -15,6 +16,7 @@ from tests.integration.helpers import (
 
 def test_complete_payment_flow_publishes_event_and_webhook() -> None:
     reset_state()
+    capture_correlation_id = str(uuid4())
     with httpx.Client(base_url=BASE_URL, timeout=10) as client:
         _, headers = create_merchant(client)
         endpoint = client.post(
@@ -44,7 +46,10 @@ def test_complete_payment_flow_publishes_event_and_webhook() -> None:
         authorized.raise_for_status()
         assert authorized.json()["status"] == "AUTHORIZED"
 
-        captured = client.post(f"/api/v1/payments/{payment_id}/capture", headers=headers)
+        captured = client.post(
+            f"/api/v1/payments/{payment_id}/capture",
+            headers={**headers, "x-correlation-id": capture_correlation_id},
+        )
         captured.raise_for_status()
         assert captured.json()["status"] == "CAPTURED"
 
@@ -82,3 +87,10 @@ def test_complete_payment_flow_publishes_event_and_webhook() -> None:
         return count == 1
 
     wait_for(webhook_succeeded, timeout_seconds=15)
+
+    with httpx.Client(base_url=RECEIVER_URL, timeout=10) as receiver:
+        received = receiver.get("/received")
+        received.raise_for_status()
+    deliveries = received.json()
+    assert len(deliveries) == 1
+    assert deliveries[0]["correlation_id"] == capture_correlation_id
