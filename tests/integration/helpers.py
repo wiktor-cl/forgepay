@@ -12,32 +12,38 @@ DATABASE_URL = "postgresql://forgepay:forgepay@localhost:5432/forgepay"
 
 
 async def reset_database() -> None:
-    connection = await asyncpg.connect(DATABASE_URL)
-    try:
-        await connection.execute(
-            """
-            truncate table
-              audit_logs,
-              webhook_deliveries,
-              webhook_secrets,
-              webhook_endpoints,
-              processed_events,
-              outbox_events,
-              idempotency_records,
-              journal_entries,
-              journals,
-              ledger_accounts,
-              refunds,
-              payments,
-              accounts,
-              customers,
-              api_keys,
-              merchants
-            cascade
-            """
-        )
-    finally:
-        await connection.close()
+    for attempt in range(5):
+        connection = await asyncpg.connect(DATABASE_URL)
+        try:
+            await connection.execute(
+                """
+                truncate table
+                  audit_logs,
+                  webhook_deliveries,
+                  webhook_secrets,
+                  webhook_endpoints,
+                  processed_events,
+                  outbox_events,
+                  idempotency_records,
+                  journal_entries,
+                  journals,
+                  ledger_accounts,
+                  refunds,
+                  payments,
+                  accounts,
+                  customers,
+                  api_keys,
+                  merchants
+                cascade
+                """
+            )
+            return
+        except asyncpg.exceptions.DeadlockDetectedError:
+            if attempt == 4:
+                raise
+            await asyncio.sleep(0.2)
+        finally:
+            await connection.close()
 
 
 def reset_state() -> None:
