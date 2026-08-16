@@ -29,7 +29,8 @@ flowchart LR
 - Ledger correctness: immutable journal entries, integer minor units, balanced journals, no floats.
 - Retries: bounded retry policies for Kafka/webhooks; no retries for permanent business failures.
 - Failure recovery: outbox rows survive publisher crashes and Kafka outages.
-- Observability: JSON logs, correlation IDs, Prometheus metrics, Grafana starter dashboard.
+- Observability: JSON logs, HTTP/Kafka/webhook correlation IDs, Prometheus metrics,
+  FastAPI OpenTelemetry instrumentation, and a Grafana starter dashboard.
 
 ## Quick Start
 
@@ -70,7 +71,7 @@ payload returns an idempotency conflict.
 make lint
 make type
 make unit
-pytest -m integration   # requires Docker/Testcontainers opt-in
+pytest   # requires Docker Compose services for integration, E2E, and resilience tests
 ```
 
 ## Failure Demonstrations
@@ -79,8 +80,11 @@ pytest -m integration   # requires Docker/Testcontainers opt-in
 python scripts/failure_demo.py
 ```
 
-The script demonstrates duplicate idempotent requests against a running local service.
-Additional scenarios are documented in `docs/architecture/failure-recovery.md`.
+The script demonstrates duplicate idempotent requests against a running local service. The
+pytest suite also executes real PostgreSQL concurrency tests, Kafka outage/outbox recovery,
+duplicate Kafka event handling, and webhook retry/dead-letter/replay scenarios against the
+Docker Compose stack. Additional scenarios are documented in
+`docs/architecture/failure-recovery.md`.
 
 ## Observability
 
@@ -88,6 +92,8 @@ Additional scenarios are documented in `docs/architecture/failure-recovery.md`.
 - Grafana: `http://localhost:3000`
 - Service metrics: `http://localhost:8000/metrics`
 - Health: `/health/live` is process-only; `/health/ready` checks required dependencies.
+- OpenTelemetry is configured for FastAPI request spans. Worker correlation is carried with
+  event envelope `correlation_id` values and forwarded to webhook receivers as `x-correlation-id`.
 
 ## What This Project Intentionally Does Not Claim
 

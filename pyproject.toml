@@ -57,6 +57,7 @@ ignore = ["B008", "E501", "S101", "S311", "ASYNC240"]
 
 [tool.ruff.lint.per-file-ignores]
 "alembic/env.py" = ["E402", "I001"]
+"tests/resilience/test_outbox_kafka_webhooks.py" = ["S603", "S607"]
 
 [tool.mypy]
 python_version = "3.13"
