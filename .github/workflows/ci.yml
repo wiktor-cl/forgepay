@@ -27,6 +27,12 @@ jobs:
       - run: python -m compileall libs services tests
       - run: docker compose down -v
       - run: docker compose up -d postgres redis kafka
+      - run: |
+          for i in {1..30}; do
+            docker compose exec -T postgres pg_isready -U forgepay -d forgepay && exit 0
+            sleep 1
+          done
+          exit 1
       - run: alembic upgrade head
         env:
           FORGEPAY_DATABASE_URL: postgresql+asyncpg://forgepay:forgepay@localhost:5432/forgepay
@@ -47,6 +53,12 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: docker compose down -v
       - run: docker compose up -d postgres redis kafka
+      - run: |
+          for i in {1..30}; do
+            docker compose exec -T postgres pg_isready -U forgepay -d forgepay && exit 0
+            sleep 1
+          done
+          exit 1
       - run: alembic upgrade head
         env:
           FORGEPAY_DATABASE_URL: postgresql+asyncpg://forgepay:forgepay@localhost:5432/forgepay
