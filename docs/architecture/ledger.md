@@ -8,8 +8,10 @@ Rules:
 - Every journal has at least two lines.
 - Debits equal credits.
 - A journal contains exactly one currency.
-- Entries are append-only.
+- Posted entries are immutable.
 - Corrections are compensating entries, not updates to historical rows.
 
-Important constraints are implemented in Alembic: positive amounts, valid directions, unique
-journal reference, and immutable foreign key relationships.
+PostgreSQL guarantees positive amounts, valid directions, unique financial references, posted
+journal balance, single-currency posted journals, and immutability of posted journals/entries.
+The domain layer guarantees that journals are created through a controlled DRAFT -> POSTED posting
+function and that money uses integer minor units instead of floats.

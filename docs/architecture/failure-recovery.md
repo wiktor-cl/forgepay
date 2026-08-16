@@ -16,6 +16,9 @@ treated as permanent unless the endpoint is manually replayed.
 Consumers insert into `processed_events` before performing side effects. The primary key
 `(event_id, consumer_name)` makes duplicate processing a no-op.
 
+Invalid event payloads or unsupported schema versions are discarded before writing
+`processed_events`, so poison messages do not create business side effects.
+
 ## Crash After Commit Before Publish
 
 The outbox row remains unpublished. On restart, the publisher reads rows where `published_at`
@@ -25,6 +28,12 @@ is null and resumes.
 
 The payment row is selected `FOR UPDATE`. A unique journal reference for `payment_capture` also
 prevents duplicate ledger side effects.
+
+## Failed Authorization
+
+Insufficient funds is a persisted business refusal. The payment is committed as `FAILED`, a
+`payment.failed` outbox event is committed in the same transaction, and the API then returns HTTP
+409. Unexpected exceptions still roll back the transaction.
 
 ## Redis Unavailable
 

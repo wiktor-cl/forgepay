@@ -23,3 +23,7 @@ Schema evolution strategy:
 - Bump `version` for breaking payload changes.
 - Keep consumers tolerant of unknown fields.
 - Contract tests validate required metadata.
+
+Consumers validate known event types and `version == 1`. Invalid or unsupported messages are
+discarded before business side effects. ForgePay claims at-least-once delivery plus idempotent
+processing, not exactly-once delivery across PostgreSQL, Kafka, and HTTP.

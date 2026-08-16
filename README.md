@@ -1,78 +1,73 @@
-# ForgePay
+# ForgePay - Distributed Payment Processing Platform
 
-Distributed payment processing platform built with Python + FastAPI.
+**Python / FastAPI / PostgreSQL / Kafka**
 
-ForgePay is a production-shaped portfolio system for demonstrating backend engineering depth:
-state machines, idempotency, PostgreSQL transaction boundaries, double-entry accounting,
-transactional outbox, at-least-once event handling, webhook retries, observability, and tests.
+ForgePay is a portfolio payment platform focused on correctness under failure: idempotent
+money-changing APIs, PostgreSQL-backed financial invariants, transactional outbox, Kafka
+at-least-once delivery, idempotent consumers, and signed webhook delivery with retry/DLQ/replay.
 
 ```mermaid
 flowchart LR
-  Merchant[Merchant API client] --> Payment[Payment Service]
-  Payment --> Postgres[(PostgreSQL financial source of truth)]
-  Payment --> Redis[(Redis: rate/velocity only)]
-  Payment --> Outbox[Transactional outbox]
-  Outbox --> Kafka[(Kafka)]
-  Kafka --> Ledger[Ledger consumer / inbox]
-  Kafka --> Webhook[Webhook delivery worker]
-  Webhook --> Receiver[Merchant endpoint]
-  Payment --> Risk[Risk service]
-  Payment --> Prometheus[Prometheus metrics]
+  Client[Merchant API client] --> Payment[FastAPI payment service]
+  Payment --> Postgres[(PostgreSQL source of truth)]
+  Payment --> Risk[Risk API: deterministic scoring]
+  Payment --> Outbox[(Transactional outbox)]
+  Outbox --> Publisher[Outbox publisher worker]
+  Publisher --> Kafka[(Kafka)]
+  Kafka --> Consumer[Payment event consumer]
+  Consumer --> Inbox[(processed_events inbox)]
+  Consumer --> Deliveries[(webhook deliveries)]
+  Deliveries --> Dispatcher[Webhook dispatcher worker]
+  Dispatcher --> Receiver[Merchant webhook endpoint]
+  Payment --> Metrics[Prometheus /metrics]
 ```
 
-## Engineering Problems Demonstrated
+## Why It Is Technically Difficult
 
-- Concurrency: `SELECT ... FOR UPDATE`, uniqueness constraints, and transaction-scoped state changes.
-- Idempotency: persistent request fingerprints and replayed responses keyed by merchant and key.
-- Distributed transactions: transactional outbox instead of two-phase commit.
-- At-least-once event delivery: processed-event inbox deduplication for consumers.
-- Ledger correctness: immutable journal entries, integer minor units, balanced journals, no floats.
-- Retries: bounded retry policies for Kafka/webhooks; no retries for permanent business failures.
-- Failure recovery: outbox rows survive publisher crashes and Kafka outages.
-- Observability: JSON logs, HTTP/Kafka/webhook correlation IDs, Prometheus metrics,
-  FastAPI OpenTelemetry instrumentation, and a Grafana starter dashboard.
+Payment systems fail in awkward places: clients retry, databases commit while brokers are down,
+workers crash after receiving events, webhook receivers return 500s, and concurrent captures race
+against the same balance. ForgePay keeps money state in PostgreSQL transactions, treats Kafka as
+at-least-once, and makes externally visible side effects idempotent.
+
+## Engineering Guarantees Demonstrated
+
+- Idempotent payment creation with persisted request fingerprints and replayed responses.
+- Explicit failed-authorization semantics: insufficient funds commits `FAILED` state and a
+  `payment.failed` outbox event before returning HTTP 409.
+- Concurrency-safe authorization/capture using row locks and database uniqueness constraints.
+- PostgreSQL-backed posted journal guarantees: balanced entries, single currency, immutable rows.
+- Transactional outbox for DB/Kafka consistency gaps.
+- Kafka at-least-once delivery with idempotent consumer side effects through `processed_events`.
+- Recoverable Kafka outage: committed outbox rows publish after Kafka returns.
+- Per-endpoint encrypted webhook signing secrets, rotation, HMAC timestamp validation, retry,
+  dead-letter state, audit-backed manual replay.
 
 ## Quick Start
 
 ```bash
 python -m pip install -e ".[dev]"
-docker compose up --build
+docker compose up -d postgres redis kafka
 alembic upgrade head
+docker compose up -d --build
 python scripts/demo.py
 ```
 
-Payment service OpenAPI docs are available at `http://localhost:8000/docs`.
+OpenAPI docs: `http://localhost:8000/docs`
 
-## Example Request
-
-```bash
-curl -X POST http://localhost:8000/api/v1/payments \
-  -H "Authorization: Bearer fg_test_..." \
-  -H "Idempotency-Key: 5e4e3bde-6eb1-4d4e-885b-a93026530a99" \
-  -H "Content-Type: application/json" \
-  -d '{"customer_id":"...","amount_minor":1000,"currency":"PLN"}'
-```
-
-The same key and same payload returns the original response. The same key with a different
-payload returns an idempotency conflict.
-
-## System Flow
-
-1. Merchant creates a payment using an API key and an idempotency key.
-2. Payment service evaluates deterministic risk rules.
-3. Payment state and outbox event commit in the same PostgreSQL transaction.
-4. Publisher asynchronously sends the event to Kafka with a stable event ID.
-5. Consumers use `processed_events` to avoid duplicate side effects.
-6. Webhook worker signs payloads and retries transient failures with bounded backoff.
-
-## Test Commands
+## Tests
 
 ```bash
-make lint
-make type
-make unit
-pytest   # requires Docker Compose services for integration, E2E, and resilience tests
+ruff check .
+ruff format --check .
+mypy libs services
+python -m compileall libs services tests
+pytest
 ```
+
+The full pytest suite requires the Docker Compose stack. It includes unit, contract, PostgreSQL
+integration, HTTP integration, concurrency, E2E, Kafka resilience, duplicate-event, and webhook
+retry/DLQ/replay tests. GitHub Actions runs these checks in the `ci` workflow; the separate
+`resilience` job repeats Kafka/webhook resilience tests on push to `main` and manual dispatch.
 
 ## Failure Demonstrations
 
@@ -80,36 +75,29 @@ pytest   # requires Docker Compose services for integration, E2E, and resilience
 python scripts/failure_demo.py
 ```
 
-The script demonstrates duplicate idempotent requests against a running local service. The
-pytest suite also executes real PostgreSQL concurrency tests, Kafka outage/outbox recovery,
-duplicate Kafka event handling, and webhook retry/dead-letter/replay scenarios against the
-Docker Compose stack. Additional scenarios are documented in
-`docs/architecture/failure-recovery.md`.
+The demo runs real pytest scenarios against the local stack and prints PASS/FAIL for idempotency,
+overspending protection, duplicate Kafka events, Kafka outage recovery, and webhook DLQ/replay.
 
 ## Observability
 
 - Prometheus: `http://localhost:9090`
 - Grafana: `http://localhost:3000`
 - Service metrics: `http://localhost:8000/metrics`
-- Health: `/health/live` is process-only; `/health/ready` checks required dependencies.
-- OpenTelemetry is configured for FastAPI request spans. Worker correlation is carried with
-  event envelope `correlation_id` values and forwarded to webhook receivers as `x-correlation-id`.
+- Health: `/health/live` and `/health/ready`
+- Correlation: send `x-correlation-id`; it is returned by HTTP responses, stored in event
+  envelopes, and forwarded to webhook receivers.
+- OpenTelemetry scope: FastAPI request instrumentation is configured. There is no local collector
+  or distributed trace backend in this portfolio version.
 
-## What This Project Intentionally Does Not Claim
+## Performance
 
-ForgePay is a portfolio/simulation system. It is not a certified payment processor, does not
-move real money, does not claim PCI/SOC compliance, and does not integrate with real card
-networks. Payment rails, provider records, and risk scoring are deterministic simulations used
-to demonstrate architecture and reliability techniques.
+`scripts/load_test.py` contains a small Locust scenario for create/read/capture traffic. Local
+measurements and the exact command used belong in `docs/performance.md`; laptop numbers are not
+presented as production capacity.
 
-## Important Trade-Offs
+## What ForgePay Is Not
 
-- PostgreSQL is the financial source of truth because database constraints and row locks are
-  easier to reason about than distributed locks for money invariants.
-- Redis is used only for ephemeral counters and velocity windows; losing Redis must not corrupt
-  financial state.
-- Kafka delivery is modeled as at-least-once. Consumers deduplicate instead of pretending
-  exactly-once delivery across all side effects.
-- Ledger entries are immutable. Corrections use compensating journals.
-- Service boundaries are intentionally small: payment orchestration is central, while risk,
-  ledger consumers, and webhooks represent separately scalable concerns.
+- Not a real payment processor.
+- No card data and no acquiring/payment network integration.
+- No PCI DSS, SOC 2, ISO 27001, or banking compliance claim.
+- Risk scoring and provider funding are deterministic simulations.
