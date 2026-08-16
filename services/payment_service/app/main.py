@@ -1,8 +1,11 @@
+import time
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, Request, Response
 from fastapi.responses import JSONResponse
 from forgepay_observability.logging import configure_json_logging
+from forgepay_observability.metrics import http_request_duration_seconds
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +23,7 @@ from app.api.schemas import (
 )
 from app.domain.payment import PaymentTransitionError
 from app.infra.database import engine, get_session
-from app.infra.models import Payment
+from app.infra.models import Payment, WebhookDelivery, WebhookEndpoint
 from app.service import (
     BusinessError,
     authorize_payment,
@@ -37,13 +40,16 @@ from app.service import (
 
 configure_json_logging()
 app = FastAPI(title="ForgePay Payment Service", version="0.1.0")
+FastAPIInstrumentor.instrument_app(app)
 
 
 class CorrelationMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
         raw = request.headers.get("x-correlation-id")
         request.state.correlation_id = UUID(raw) if raw else uuid4()
+        started = time.perf_counter()
         response = await call_next(request)
+        http_request_duration_seconds.observe(time.perf_counter() - started)
         response.headers["x-correlation-id"] = str(request.state.correlation_id)
         return response
 
@@ -82,7 +88,8 @@ async def metrics() -> Response:
 async def create_merchant_route(
     request: Request, body: MerchantCreate, session: AsyncSession = Depends(get_session)
 ) -> dict[str, str]:
-    return await create_merchant(session, body, request.state.correlation_id)
+    async with session.begin():
+        return await create_merchant(session, body, request.state.correlation_id)
 
 
 @app.post("/api/v1/customers", status_code=201)
@@ -93,7 +100,10 @@ async def create_customer_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     principal.require("payments:write", request.state.correlation_id)
-    return await create_customer(session, principal.merchant_id, body, request.state.correlation_id)
+    async with session.begin():
+        return await create_customer(
+            session, principal.merchant_id, body, request.state.correlation_id
+        )
 
 
 @app.post("/api/v1/accounts/{account_id}/fund", status_code=201)
@@ -105,9 +115,10 @@ async def fund_account_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     principal.require("payments:write", request.state.correlation_id)
-    return await fund_account(
-        session, principal.merchant_id, account_id, body, request.state.correlation_id
-    )
+    async with session.begin():
+        return await fund_account(
+            session, principal.merchant_id, account_id, body, request.state.correlation_id
+        )
 
 
 @app.post("/api/v1/payments", status_code=201)
@@ -119,9 +130,10 @@ async def create_payment_route(
     session: AsyncSession = Depends(get_session),
 ) -> JSONResponse:
     principal.require("payments:write", request.state.correlation_id)
-    status, response_body = await create_payment(
-        session, principal.merchant_id, body, idempotency_key, request.state.correlation_id
-    )
+    async with session.begin():
+        status, response_body = await create_payment(
+            session, principal.merchant_id, body, idempotency_key, request.state.correlation_id
+        )
     return JSONResponse(content=response_body, status_code=status)
 
 
@@ -149,9 +161,10 @@ async def authorize_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
     principal.require("payments:write", request.state.correlation_id)
-    return await authorize_payment(
-        session, principal.merchant_id, payment_id, request.state.correlation_id
-    )
+    async with session.begin():
+        return await authorize_payment(
+            session, principal.merchant_id, payment_id, request.state.correlation_id
+        )
 
 
 @app.post("/api/v1/payments/{payment_id}/capture")
@@ -162,9 +175,10 @@ async def capture_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
     principal.require("payments:write", request.state.correlation_id)
-    return await capture_payment(
-        session, principal.merchant_id, payment_id, request.state.correlation_id
-    )
+    async with session.begin():
+        return await capture_payment(
+            session, principal.merchant_id, payment_id, request.state.correlation_id
+        )
 
 
 @app.post("/api/v1/payments/{payment_id}/cancel")
@@ -175,9 +189,10 @@ async def cancel_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
     principal.require("payments:write", request.state.correlation_id)
-    return await cancel_payment(
-        session, principal.merchant_id, payment_id, request.state.correlation_id
-    )
+    async with session.begin():
+        return await cancel_payment(
+            session, principal.merchant_id, payment_id, request.state.correlation_id
+        )
 
 
 @app.post("/api/v1/payments/{payment_id}/refund")
@@ -189,9 +204,10 @@ async def refund_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
     principal.require("refunds:write", request.state.correlation_id)
-    return await refund_payment(
-        session, principal.merchant_id, payment_id, body, request.state.correlation_id
-    )
+    async with session.begin():
+        return await refund_payment(
+            session, principal.merchant_id, payment_id, body, request.state.correlation_id
+        )
 
 
 @app.post("/api/v1/webhooks/endpoints", status_code=201)
@@ -202,6 +218,39 @@ async def register_webhook_route(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     principal.require("webhooks:manage", request.state.correlation_id)
-    return await register_webhook(
-        session, principal.merchant_id, body, request.state.correlation_id
-    )
+    async with session.begin():
+        return await register_webhook(
+            session, principal.merchant_id, body, request.state.correlation_id
+        )
+
+
+@app.post("/api/v1/webhooks/deliveries/{delivery_id}/replay")
+async def replay_webhook_delivery_route(
+    request: Request,
+    delivery_id: UUID,
+    principal: Principal = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    principal.require("webhooks:manage", request.state.correlation_id)
+    async with session.begin():
+        delivery = await session.get(WebhookDelivery, delivery_id, with_for_update=True)
+        if delivery is None:
+            raise api_error(
+                404,
+                "WEBHOOK_DELIVERY_NOT_FOUND",
+                "Webhook delivery was not found.",
+                request.state.correlation_id,
+            )
+        endpoint = await session.get(WebhookEndpoint, delivery.endpoint_id)
+        if endpoint is None or endpoint.merchant_id != principal.merchant_id:
+            raise api_error(
+                404,
+                "WEBHOOK_DELIVERY_NOT_FOUND",
+                "Webhook delivery was not found.",
+                request.state.correlation_id,
+            )
+        delivery.status = "PENDING"
+        delivery.attempts = 0
+        delivery.next_attempt_at = None
+        delivery.last_error = None
+        return {"delivery_id": str(delivery.id), "status": delivery.status}

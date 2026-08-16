@@ -4,6 +4,7 @@ from uuid import UUID
 from forgepay_common.money import Currency, Money
 from forgepay_common.time import utc_now
 from forgepay_events import EventType
+from forgepay_observability.metrics import payments_created_total, payments_failed_total
 from forgepay_security.api_keys import generate_api_key, hash_secret
 from forgepay_security.fingerprints import canonical_fingerprint
 from forgepay_security.webhooks import sign_webhook
@@ -47,6 +48,7 @@ from app.infra.repositories import (
     mark_event_processed,
     payment_for_update,
 )
+from app.settings import Settings
 
 
 class BusinessError(ValueError):
@@ -123,6 +125,9 @@ async def fund_account(
 ) -> dict[str, Any]:
     account = await session.get(Account, account_id, with_for_update=True)
     if account is None:
+        raise BusinessError("ACCOUNT_NOT_FOUND", "Account was not found.")
+    customer = await session.get(Customer, account.customer_id)
+    if customer is None or customer.merchant_id != merchant_id:
         raise BusinessError("ACCOUNT_NOT_FOUND", "Account was not found.")
     if account.currency != request.currency.value:
         raise BusinessError(
@@ -233,6 +238,9 @@ async def create_payment(
     )
     body = payment_response(payment)
     await complete_idempotency(session, idempotency, 201, body, payment.id)
+    payments_created_total.inc()
+    if status == PaymentStatus.FAILED:
+        payments_failed_total.inc()
     return 201, body
 
 
@@ -257,6 +265,7 @@ async def authorize_payment(
             {"payment_id": str(payment.id), "reason": "INSUFFICIENT_FUNDS"},
             correlation_id,
         )
+        payments_failed_total.inc()
         raise BusinessError("INSUFFICIENT_FUNDS", "Available balance is insufficient.")
     payment.status = PaymentStatus.AUTHORIZED.value
     payment.updated_at = utc_now()
@@ -293,6 +302,9 @@ async def capture_payment(
     customer = await session.get(Customer, payment.customer_id, with_for_update=True)
     if customer is None:
         raise BusinessError("CUSTOMER_NOT_FOUND", "Customer was not found.")
+    balance = await available_balance(session, customer.id, payment.currency)
+    if balance < payment.amount_minor:
+        raise BusinessError("INSUFFICIENT_FUNDS", "Available balance is insufficient.")
     customer_cash = await ensure_ledger_account(
         session, customer.id, "customer_cash", payment.currency, "DEBIT"
     )
@@ -425,7 +437,7 @@ async def register_webhook(
     request: WebhookEndpointCreate,
     correlation_id: UUID,
 ) -> dict[str, Any]:
-    secret = f"whsec_{hash_secret(str(utc_now().timestamp()))[:32]}"
+    secret = Settings().webhook_secret
     endpoint = WebhookEndpoint(
         merchant_id=merchant_id,
         url=str(request.url),

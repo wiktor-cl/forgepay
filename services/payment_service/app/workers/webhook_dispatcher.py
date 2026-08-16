@@ -2,13 +2,15 @@ import asyncio
 import json
 import random
 import time
+from datetime import timedelta
 
 import httpx
 from app.infra.database import SessionFactory
-from app.infra.models import WebhookDelivery, WebhookEndpoint
+from app.infra.models import OutboxEvent, WebhookDelivery, WebhookEndpoint
 from app.service import sign_delivery_body
 from app.settings import Settings
 from forgepay_common.time import utc_now
+from forgepay_observability.metrics import webhook_delivery_failures_total, webhook_delivery_total
 from sqlalchemy import select
 
 
@@ -36,12 +38,19 @@ async def dispatch_once() -> int:
                 if endpoint is None:
                     delivery.status = "DEAD_LETTER"
                     continue
+                event = await session.get(OutboxEvent, delivery.event_id)
+                correlation_id = (
+                    str(event.payload.get("correlation_id"))
+                    if event is not None and isinstance(event.payload, dict)
+                    else str(delivery.event_id)
+                )
                 body = json.dumps(
                     {"event_id": str(delivery.event_id)}, separators=(",", ":")
                 ).encode()
                 timestamp = int(time.time())
                 signature = sign_delivery_body(settings.webhook_secret, timestamp, body)
                 try:
+                    webhook_delivery_total.inc()
                     response = await client.post(
                         endpoint.url,
                         content=body,
@@ -49,6 +58,7 @@ async def dispatch_once() -> int:
                             "content-type": "application/json",
                             "forgepay-signature": signature,
                             "forgepay-timestamp": str(timestamp),
+                            "x-correlation-id": correlation_id,
                         },
                     )
                     delivery.attempts += 1
@@ -61,16 +71,25 @@ async def dispatch_once() -> int:
                     ):
                         delivery.status = "DEAD_LETTER"
                         delivery.last_error = f"http {response.status_code}"
+                        webhook_delivery_failures_total.inc()
                     else:
                         delivery.status = "RETRY"
-                        delivery.next_attempt_at = utc_now()
+                        webhook_delivery_failures_total.inc()
+                        delivery.next_attempt_at = utc_now() + timedelta(
+                            seconds=next_delay(delivery.attempts)
+                        )
                 except httpx.HTTPError as exc:
                     delivery.attempts += 1
+                    webhook_delivery_failures_total.inc()
                     delivery.status = (
                         "DEAD_LETTER"
                         if delivery.attempts >= settings.webhook_max_attempts
                         else "RETRY"
                     )
+                    if delivery.status == "RETRY":
+                        delivery.next_attempt_at = utc_now() + timedelta(
+                            seconds=next_delay(delivery.attempts)
+                        )
                     delivery.last_error = str(exc)
     return sent
 

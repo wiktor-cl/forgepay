@@ -6,6 +6,7 @@ from aiokafka import AIOKafkaProducer
 from app.infra.database import SessionFactory
 from app.infra.repositories import bump_publish_retry, mark_published, pending_outbox
 from app.settings import Settings
+from forgepay_observability.metrics import outbox_pending_total, outbox_publish_failures_total
 
 logger = logging.getLogger(__name__)
 
@@ -13,11 +14,16 @@ logger = logging.getLogger(__name__)
 async def publish_once() -> int:
     settings = Settings()
     producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap_servers)
-    await producer.start()
+    try:
+        await producer.start()
+    except Exception:
+        logger.exception("kafka producer start failed")
+        return 0
     count = 0
     try:
         async with SessionFactory() as session, session.begin():
             rows = await pending_outbox(session)
+            outbox_pending_total.set(len(rows))
             for event in rows:
                 try:
                     await producer.send_and_wait(
@@ -31,6 +37,7 @@ async def publish_once() -> int:
                     logger.exception(
                         "outbox publish failed", extra={"event_id": str(event.event_id)}
                     )
+                    outbox_publish_failures_total.inc()
                     await bump_publish_retry(session, event)
     finally:
         await producer.stop()
