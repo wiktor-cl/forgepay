@@ -112,8 +112,8 @@ class Journal(Base):
     reference_type: Mapped[str] = mapped_column(String(50))
     reference_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
     currency: Mapped[str] = mapped_column(String(3))
-    status: Mapped[str] = mapped_column(String(16), default="POSTED")
-    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utc_now)
+    status: Mapped[str] = mapped_column(String(16), default="DRAFT")
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     entries: Mapped[list["JournalEntry"]] = relationship(cascade="all, delete-orphan")
     __table_args__ = (
