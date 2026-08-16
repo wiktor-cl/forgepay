@@ -35,8 +35,8 @@ async def consume_forever() -> None:
         async for message in consumer:
             try:
                 payload = decode_event_payload(message.value)
-            except (json.JSONDecodeError, KeyError, TypeError, ValueError, ValidationError):
-                logger.exception("discarding invalid event payload")
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError, ValidationError) as exc:
+                logger.warning("discarding invalid event payload: %s", exc)
                 await consumer.commit()
                 continue
             event_id = UUID(str(payload["event_id"]))

@@ -3,6 +3,7 @@ import json
 import logging
 
 from aiokafka import AIOKafkaProducer
+from aiokafka.errors import KafkaError
 from app.infra.database import SessionFactory
 from app.infra.repositories import bump_publish_retry, mark_published, pending_outbox
 from app.settings import Settings
@@ -16,8 +17,8 @@ async def publish_once() -> int:
     producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap_servers)
     try:
         await producer.start()
-    except Exception:
-        logger.exception("kafka producer start failed")
+    except KafkaError as exc:
+        logger.warning("kafka producer start failed: %s", exc)
         return 0
     count = 0
     try:
@@ -33,9 +34,11 @@ async def publish_once() -> int:
                     )
                     await mark_published(session, event)
                     count += 1
-                except Exception:
-                    logger.exception(
-                        "outbox publish failed", extra={"event_id": str(event.event_id)}
+                except KafkaError as exc:
+                    logger.warning(
+                        "outbox publish failed: %s",
+                        exc,
+                        extra={"event_id": str(event.event_id)},
                     )
                     outbox_publish_failures_total.inc()
                     await bump_publish_retry(session, event)
