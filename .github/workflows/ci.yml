@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: forgepay-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy libs services
+      - run: pytest tests/unit tests/contract tests/concurrency
+      - run: alembic upgrade head
+        env:
+          FORGEPAY_DATABASE_URL: postgresql+asyncpg://forgepay:forgepay@localhost:5432/forgepay
+      - run: docker build -f infrastructure/docker/Dockerfile.payment .
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: forgepay
+          POSTGRES_PASSWORD: forgepay
+          POSTGRES_DB: forgepay
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U forgepay -d forgepay"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20

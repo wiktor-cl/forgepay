@@ -1,0 +1,83 @@
+[project]
+name = "forgepay"
+version = "0.1.0"
+description = "Distributed payment processing platform portfolio project."
+requires-python = ">=3.13"
+dependencies = [
+  "aiokafka>=0.12.0",
+  "alembic>=1.13.3",
+  "asyncpg>=0.30.0",
+  "fastapi>=0.115.0",
+  "email-validator>=2.2.0",
+  "httpx>=0.27.2",
+  "opentelemetry-api>=1.27.0",
+  "opentelemetry-instrumentation-fastapi>=0.48b0",
+  "opentelemetry-sdk>=1.27.0",
+  "prometheus-client>=0.21.0",
+  "pydantic>=2.9.2",
+  "pydantic-settings>=2.5.2",
+  "redis>=5.0.8",
+  "sqlalchemy[asyncio]>=2.0.35",
+  "tenacity>=9.0.0",
+  "uvicorn[standard]>=0.30.6",
+]
+
+[project.optional-dependencies]
+dev = [
+  "coverage>=7.6.1",
+  "hypothesis>=6.112.0",
+  "locust>=2.31.5",
+  "mypy>=1.11.2",
+  "pre-commit>=3.8.0",
+  "pytest>=8.3.3",
+  "pytest-asyncio>=0.24.0",
+  "ruff>=0.6.8",
+  "testcontainers[kafka,postgres,redis]>=4.8.1",
+]
+
+[tool.setuptools]
+packages = []
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "integration: requires Docker-backed services",
+  "e2e: requires the compose stack",
+]
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "S"]
+ignore = ["B008", "E501", "S101", "S311", "ASYNC240"]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/env.py" = ["E402", "I001"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unused_configs = true
+warn_return_any = false
+explicit_package_bases = true
+mypy_path = [
+  "libs/common",
+  "libs/events",
+  "libs/security",
+  "libs/observability",
+  "services/payment_service",
+  ".",
+]
+packages = ["forgepay_common", "forgepay_events", "forgepay_security", "forgepay_observability", "app"]
+
+[[tool.mypy.overrides]]
+module = ["aiokafka.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+branch = true
+source = ["libs", "services"]

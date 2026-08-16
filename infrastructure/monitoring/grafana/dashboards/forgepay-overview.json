@@ -1,0 +1,9 @@
+{
+  "title": "ForgePay Overview",
+  "schemaVersion": 39,
+  "panels": [
+    {"type": "timeseries", "title": "Payments Created", "targets": [{"expr": "rate(payments_created_total[5m])"}]},
+    {"type": "timeseries", "title": "Outbox Pending", "targets": [{"expr": "outbox_pending_total"}]},
+    {"type": "timeseries", "title": "Webhook Failures", "targets": [{"expr": "rate(webhook_delivery_failures_total[5m])"}]}
+  ]
+}

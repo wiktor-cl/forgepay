@@ -1,0 +1,1 @@
+"""ForgePay service namespace."""

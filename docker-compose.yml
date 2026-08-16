@@ -1,0 +1,111 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: forgepay
+      POSTGRES_PASSWORD: forgepay
+      POSTGRES_DB: forgepay
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forgepay -d forgepay"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  kafka:
+    image: bitnami/kafka:3.8
+    ports: ["9092:9092"]
+    environment:
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: broker,controller
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.payment
+    environment:
+      FORGEPAY_DATABASE_URL: postgresql+asyncpg://forgepay:forgepay@postgres:5432/forgepay
+      FORGEPAY_REDIS_URL: redis://redis:6379/0
+      FORGEPAY_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    ports: ["8000:8000"]
+
+  outbox-publisher:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.payment
+    command: ["python", "-m", "app.workers.outbox_publisher"]
+    environment:
+      FORGEPAY_DATABASE_URL: postgresql+asyncpg://forgepay:forgepay@postgres:5432/forgepay
+      FORGEPAY_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on: [payment-service]
+
+  webhook-dispatcher:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.payment
+    command: ["python", "-m", "app.workers.webhook_dispatcher"]
+    environment:
+      FORGEPAY_DATABASE_URL: postgresql+asyncpg://forgepay:forgepay@postgres:5432/forgepay
+    depends_on: [payment-service]
+
+  risk-service:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.payment
+    command: ["uvicorn", "services.risk_service.app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    ports: ["8001:8001"]
+
+  ledger-service:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.payment
+    command: ["uvicorn", "services.ledger_service.app.main:app", "--host", "0.0.0.0", "--port", "8002"]
+    ports: ["8002:8002"]
+
+  webhook-service:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.payment
+    command: ["uvicorn", "services.webhook_service.app.main:app", "--host", "0.0.0.0", "--port", "8003"]
+    ports: ["8003:8003"]
+
+  webhook-receiver-demo:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.payment
+    command: ["uvicorn", "services.webhook_receiver_demo.main:app", "--host", "0.0.0.0", "--port", "8010"]
+    ports: ["8010:8010"]
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes:
+      - ./infrastructure/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports: ["3000:3000"]
+    volumes:
+      - ./infrastructure/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
