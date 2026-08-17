@@ -1,6 +1,10 @@
 # ForgePay - Distributed Payment Processing Platform
 
+[![CI](https://github.com/wiktor-cl/forgepay/actions/workflows/ci.yml/badge.svg)](https://github.com/wiktor-cl/forgepay/actions/workflows/ci.yml)
+
 **Python / FastAPI / PostgreSQL / Kafka**
+
+> **Recruiter snapshot:** backend-heavy portfolio project focused on transaction safety, idempotency, concurrency, event-driven processing and failure recovery. The repository includes integration, E2E, concurrency and resilience tests plus CI, migrations, metrics and architecture documentation.
 
 ForgePay is a portfolio payment platform focused on correctness under failure: idempotent
 money-changing APIs, PostgreSQL-backed financial invariants, transactional outbox, Kafka
